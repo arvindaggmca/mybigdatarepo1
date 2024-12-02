@@ -1,0 +1,72 @@
+import time
+from pyspark import SparkConf, SparkContext
+
+def delayed(seconds):
+    def f(x):
+        time.sleep(seconds)
+        return x
+    return f
+
+def run():
+    rdd = sc.parallelize(range(10), 10).map(delayed(2))
+    reduced = rdd.map(lambda x: (x, 1)).reduceByKey(lambda x, y: x + y)
+    return reduced.map(delayed(2)).collect()
+
+# Initialize Spark
+conf = SparkConf().setAppName("MetricsCollectionDemo")
+sc = SparkContext(conf=conf)
+status = sc.statusTracker()
+
+# Start the background job
+result = sc.parallelize([1]).map(lambda x: run()).collect()
+
+# Metrics collection
+start_time = time.time()
+all_jobs_info = []
+
+while True:
+    job_ids = status.getJobIdsForGroup()
+    all_jobs_done = True
+
+    for job_id in job_ids:
+        job_info = status.getJobInfo(job_id)
+        if job_info is not None:
+            stages_info = []
+            for stage_id in job_info.stageIds:
+                stage_info = status.getStageInfo(stage_id)
+                if stage_info:
+                    stages_info.append({
+                        "stage_id": stage_id,
+                        "total_tasks": stage_info.numTasks,
+                        "active_tasks": stage_info.numActiveTasks,
+                        "completed_tasks": stage_info.numCompletedTasks
+                    })
+
+            all_jobs_info.append({
+                "job_id": job_id,
+                "status": job_info.status,
+                "stages": stages_info
+            })
+            
+            # Check if any job is still active
+            if job_info.status != "SUCCEEDED":
+                all_jobs_done = False
+
+    if all_jobs_done:
+        break
+    else:
+        time.sleep(0.5)  # Sleep before checking again to reduce CPU usage
+
+end_time = time.time()
+
+# Compile final metrics dictionary
+metrics = {
+    "execution_time_seconds": end_time - start_time,
+    "jobs": all_jobs_info
+}
+
+print("Metrics collected:")
+print(metrics)
+
+# Stop Spark
+sc.stop()
